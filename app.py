@@ -11,7 +11,7 @@ app = Flask(__name__)
 app.secret_key = 'skyid_master_key_change_in_production'
 DB_NAME = 'skyid.db'
 
-# --- CSS И ДИЗАЙН ---
+# --- CSS И ДИЗАЙН (Без изменений) ---
 BASE_STYLES = """
 <style>
     :root {
@@ -127,13 +127,13 @@ def close_connection(exception):
 def init_db():
     with app.app_context():
         db = get_db()
+        # ИЗМЕНЕНИЕ: Убран Email, только username (логин)
         db.execute('''CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
+            username TEXT UNIQUE NOT NULL, 
             password TEXT NOT NULL,
             name TEXT NOT NULL
         )''')
-        # Обновленная таблица приложений: api_key вместо client_secret
         db.execute('''CREATE TABLE IF NOT EXISTS apps (
             client_id TEXT PRIMARY KEY,
             api_key TEXT NOT NULL, 
@@ -182,7 +182,8 @@ def index():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form['username'].strip().lower() # Приводим к нижнему регистру
+        # ИЗМЕНЕНИЕ: Только username (логин) и password, name
+        username = request.form['username'].strip() 
         password = request.form['password']
         name = request.form['name']
         
@@ -194,23 +195,23 @@ def register():
             flash('Аккаунт успешно создан! Войдите.')
             return redirect(url_for('login'))
         except sqlite3.IntegrityError:
-            flash('Этот Email уже зарегистрирован.')
+            flash(f'Логин "{username}" уже занят.')
 
     return render_template_string(LAYOUT + """
     <div class="container container-small">
         <div class="card">
-            <h2>Регистрация</h2>
+            <h2>Регистрация SkyID</h2>
             {% with messages = get_flashed_messages() %}
                 {% if messages %}<div class="flash">{{ messages[0] }}</div>{% endif %}
             {% endwith %}
             <form method="post">
                 <div class="input-group">
-                    <label>Ваше имя</label>
-                    <input type="text" name="name" required placeholder="Алексей">
+                    <label>Ваше Имя (отображаемое)</label>
+                    <input type="text" name="name" required placeholder="Иван">
                 </div>
                 <div class="input-group">
-                    <label>Email (Используется как логин)</label>
-                    <input type="email" name="username" required placeholder="alex@mail.ru">
+                    <label>Логин (Никнейм)</label>
+                    <input type="text" name="username" required placeholder="ivan_sky" pattern="[a-zA-Z0-9_]+" title="Только латинские буквы, цифры и подчеркивание.">
                 </div>
                 <div class="input-group">
                     <label>Пароль</label>
@@ -228,7 +229,8 @@ def login():
     next_url = request.args.get('next') or url_for('dashboard')
     
     if request.method == 'POST':
-        username = request.form['username'].strip().lower()
+        # ИЗМЕНЕНИЕ: Используем Логин (username)
+        username = request.form['username'].strip()
         password = request.form['password']
         
         db = get_db()
@@ -240,7 +242,7 @@ def login():
             session['user_name'] = user['name']
             return redirect(next_url)
         else:
-            flash('Неверный Email или пароль')
+            flash('Неверный логин или пароль')
 
     return render_template_string(LAYOUT + """
     <div class="container container-small">
@@ -251,8 +253,8 @@ def login():
             {% endwith %}
             <form method="post">
                 <div class="input-group">
-                    <label>Email</label>
-                    <input type="email" name="username" required>
+                    <label>Логин</label>
+                    <input type="text" name="username" required>
                 </div>
                 <div class="input-group">
                     <label>Пароль</label>
@@ -264,11 +266,6 @@ def login():
         </div>
     </div>
     """)
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('index'))
 
 @app.route('/dashboard', methods=['GET', 'POST'])
 @login_required
@@ -397,8 +394,7 @@ def oauth_authorize():
         # Генерируем временный код авторизации
         auth_code = secrets.token_urlsafe(16)
         
-        # В идеале нужно сохранить auth_code в БД и связать с client_id, но для упрощения:
-        # Мы просто возвращаем его. В продакшене код должен жить 10 минут.
+        # В идеале нужно сохранить auth_code в БД и связать с client_id
         redirect_to = f"{app_info['redirect_uri']}?code={auth_code}"
         return redirect(redirect_to)
 
@@ -411,7 +407,7 @@ def oauth_authorize():
             
             <ul style="text-align: left; background: #f7f9fa; padding: 15px; border-radius: 8px; list-style: none; margin: 20px 0;">
                 <li style="margin-bottom: 10px;">✅ Просмотр вашего имени</li>
-                <li>✅ Просмотр вашего Email</li>
+                <li>✅ Просмотр вашего Логина (Никнейма)</li>
             </ul>
 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
@@ -429,40 +425,38 @@ def oauth_authorize():
 
 @app.route('/oauth/token', methods=['POST'])
 def oauth_token():
-    # Эндпоинт для обмена кода на токен. 
-    # Теперь использует api_key вместо client_secret.
-    
     grant_type = request.form.get('grant_type')
     client_id = request.form.get('client_id')
-    api_key = request.form.get('client_secret') # Принимаем api_key как client_secret для совместимости
+    api_key = request.form.get('client_secret') 
     code = request.form.get('code')
     
-    # Проверка параметров
     if not all([grant_type, client_id, api_key, code]):
         return jsonify({'error': 'invalid_request', 'message': 'Missing parameters'}), 400
         
     db = get_db()
-    # Проверяем пару ID + Длинный Ключ
     app_info = db.execute('SELECT * FROM apps WHERE client_id = ? AND api_key = ?', 
                           (client_id, api_key)).fetchone()
     
     if not app_info:
         return jsonify({'error': 'invalid_client', 'message': 'Wrong Client ID or API Key'}), 401
 
-    # Генерируем токен доступа
     access_token = secrets.token_hex(20)
     
     return jsonify({
         'access_token': access_token,
         'token_type': 'Bearer',
         'expires_in': 3600,
-        'user_id': app_info['owner_id'] # В демо-режиме возвращаем ID владельца
+        'user_id': app_info['owner_id'] 
     })
 
-# --- ИНИЦИАЛИЗАЦИЯ ---
+# --- ИНИЦИАЛИЗАЦИЯ И ЗАПУСК ---
+
+# ГАРАНТИЯ: Таблицы БД создаются при запуске Gunicorn/Flask
+with app.app_context():
+    init_db()
+    print("--- DEBUG: ГАРАНТИЯ: Таблицы БД созданы/проверены.")
+
 
 if __name__ == '__main__':
-    # Всегда вызываем init_db для гарантии структуры
-    init_db()
-    print("SkyID 2.0 запущен на http://127.0.0.1:5000")
+    print("SkyID 3.0 запущен на http://127.0.0.1:5000 (Локально)")
     app.run(debug=True)
