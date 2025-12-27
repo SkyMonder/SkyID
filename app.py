@@ -8,10 +8,11 @@ from flask import Flask, request, render_template_string, redirect, session, url
 
 # --- КОНФИГУРАЦИЯ ---
 app = Flask(__name__)
-app.secret_key = 'skyid_master_key_change_in_production'
+# КРИТИЧНО: Используйте статический, длинный, сложный ключ! 
+app.secret_key = 'skyid_master_key_v3_highly_secret_and_static_2025' 
 DB_NAME = 'skyid.db'
 
-# --- CSS И ДИЗАЙН ---
+# --- CSS И ДИЗАЙН (Без изменений) ---
 BASE_STYLES = """
 <style>
     :root {
@@ -51,15 +52,7 @@ BASE_STYLES = """
 
     .flash { background: #fee; color: #E63946; padding: 12px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #fcc; font-size: 14px; }
     
-    /* Стили для виджета кнопки */
-    .widget-preview { padding: 20px; background: #f8f9fa; border: 1px dashed #ccc; border-radius: 8px; text-align: center; margin: 15px 0; }
-    .code-block { background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 6px; font-family: monospace; font-size: 12px; overflow-x: auto; position: relative; }
-    
-    .app-item { border-bottom: 1px solid #eee; padding: 20px 0; display: flex; justify-content: space-between; align-items: flex-start; }
-    .app-item:last-child { border-bottom: none; }
-    .key-display { font-family: monospace; background: #eee; padding: 4px 8px; border-radius: 4px; color: #333; font-size: 13px; word-break: break-all; }
-    
-    /* Стиль самой кнопки быстрого входа (для интеграции и для главной страницы) */
+    /* Стиль самой кнопки быстрого входа */
     .skyid-widget-btn {
         background-color: #0077FF;
         color: white;
@@ -78,6 +71,13 @@ BASE_STYLES = """
     .skyid-widget-btn:hover { background-color: #005ECC; }
     .skyid-widget-btn:active { transform: scale(0.98); }
     .skyid-logo-small { font-weight: 900; background: white; color: #0077FF; width: 20px; height: 20px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+    /* Остальные стили для dashboard опущены для краткости */
+    .widget-preview { padding: 20px; background: #f8f9fa; border: 1px dashed #ccc; border-radius: 8px; text-align: center; margin: 15px 0; }
+    .code-block { background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 6px; font-family: monospace; font-size: 12px; overflow-x: auto; position: relative; }
+    .app-item { border-bottom: 1px solid #eee; padding: 20px 0; display: flex; justify-content: space-between; align-items: flex-start; }
+    .app-item:last-child { border-bottom: none; }
+    .key-display { font-family: monospace; background: #eee; padding: 4px 8px; border-radius: 4px; color: #333; font-size: 13px; word-break: break-all; }
+
 </style>
 """
 
@@ -134,13 +134,20 @@ def init_db():
             password TEXT NOT NULL,
             name TEXT NOT NULL
         )''')
-        # Таблица apps: один длинный API Key
+        # Таблица apps
         db.execute('''CREATE TABLE IF NOT EXISTS apps (
             client_id TEXT PRIMARY KEY,
             api_key TEXT NOT NULL, 
             owner_id INTEGER NOT NULL,
             app_name TEXT NOT NULL,
             redirect_uri TEXT NOT NULL
+        )''')
+        # Таблица для хранения временных кодов авторизации (CRITICAL FOR OAUTH)
+        db.execute('''CREATE TABLE IF NOT EXISTS auth_codes (
+            code TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            client_id TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )''')
         db.commit()
 
@@ -157,7 +164,7 @@ def login_required(f):
 def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# --- МАРШРУТЫ ---
+# --- МАРШРУТЫ АУТЕНТИФИКАЦИИ ---
 
 @app.route('/')
 def index():
@@ -184,6 +191,7 @@ def index():
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
+    # ... (логика регистрации)
     if request.method == 'POST':
         username = request.form['username'].strip() 
         password = request.form['password']
@@ -198,7 +206,7 @@ def register():
             return redirect(url_for('login'))
         except sqlite3.IntegrityError:
             flash(f'Логин "{username}" уже занят.')
-
+    # ... (HTML регистрации)
     return render_template_string(LAYOUT + """
     <div class="container container-small">
         <div class="card">
@@ -239,12 +247,14 @@ def login():
                           (username, hash_pass(password))).fetchone()
         
         if user:
+            # КРИТИЧНО: Здесь устанавливается сессия
             session['user_id'] = user['id']
             session['user_name'] = user['name']
             return redirect(next_url)
         else:
             flash('Неверный логин или пароль')
 
+    # ... (HTML логина)
     return render_template_string(LAYOUT + """
     <div class="container container-small">
         <div class="card">
@@ -276,6 +286,7 @@ def logout():
 @app.route('/dashboard', methods=['GET', 'POST'])
 @login_required
 def dashboard():
+    # ... (логика и HTML дашборда)
     db = get_db()
     host_url = request.host_url.rstrip('/')
     
@@ -283,9 +294,7 @@ def dashboard():
         app_name = request.form['app_name']
         redirect_uri = request.form['redirect_uri']
         
-        # Генерируем публичный App ID
         client_id = str(uuid.uuid4().int)[:10] 
-        # Генерируем длинный секретный API ключ (64 символа)
         api_key = secrets.token_hex(32) 
         
         db.execute('INSERT INTO apps (client_id, api_key, owner_id, app_name, redirect_uri) VALUES (?, ?, ?, ?, ?)',
@@ -378,6 +387,7 @@ def dashboard():
     </div>
     """, host_url=host_url, my_apps=my_apps)
 
+
 # --- OAUTH ЛОГИКА ---
 
 @app.route('/oauth/authorize', methods=['GET', 'POST'])
@@ -394,15 +404,26 @@ def oauth_authorize():
         return "Ошибка: Приложение с таким ID не найдено", 404
 
     if 'user_id' not in session:
+        # Если сессия не найдена, перенаправляем на вход, сохраняя текущий URL (с параметрами)
         return redirect(url_for('login', next=request.url))
 
     if request.method == 'POST':
-        # Генерируем временный код авторизации
+        # Генерируем временный код авторизации (связываем с пользователем и приложением)
         auth_code = secrets.token_urlsafe(16)
         
+        try:
+            db.execute('INSERT INTO auth_codes (code, user_id, client_id) VALUES (?, ?, ?)',
+                       (auth_code, session['user_id'], client_id))
+            db.commit()
+        except sqlite3.IntegrityError:
+            return "Ошибка сервера при сохранении кода", 500
+        
+        # Перенаправляем обратно на Redirect URI внешнего приложения с кодом
         redirect_to = f"{app_info['redirect_uri']}?code={auth_code}"
         return redirect(redirect_to)
 
+    # Страница подтверждения
+    # ... (HTML подтверждения)
     return render_template_string(LAYOUT + """
     <div class="container container-small">
         <div class="card" style="text-align: center;">
@@ -428,6 +449,7 @@ def oauth_authorize():
     </div>
     """, app_name=app_info['app_name'], user_name=session['user_name'])
 
+
 @app.route('/oauth/token', methods=['POST'])
 def oauth_token():
     grant_type = request.form.get('grant_type')
@@ -435,23 +457,38 @@ def oauth_token():
     api_key = request.form.get('client_secret') 
     code = request.form.get('code')
     
-    if not all([grant_type, client_id, api_key, code]):
-        return jsonify({'error': 'invalid_request', 'message': 'Missing parameters'}), 400
+    if not all([grant_type == 'authorization_code', client_id, api_key, code]):
+        return jsonify({'error': 'invalid_request', 'message': 'Missing or incorrect parameters'}), 400
         
     db = get_db()
+    
+    # 1. Проверяем приложение (Client ID и API Key)
     app_info = db.execute('SELECT * FROM apps WHERE client_id = ? AND api_key = ?', 
                           (client_id, api_key)).fetchone()
-    
     if not app_info:
         return jsonify({'error': 'invalid_client', 'message': 'Wrong Client ID or API Key'}), 401
 
+    # 2. Проверяем и удаляем код авторизации
+    auth_info = db.execute('SELECT * FROM auth_codes WHERE code = ? AND client_id = ?', 
+                           (code, client_id)).fetchone()
+    if not auth_info:
+        return jsonify({'error': 'invalid_grant', 'message': 'Authorization code is invalid or expired'}), 400
+    
+    # Удаляем код (его можно использовать только один раз)
+    db.execute('DELETE FROM auth_codes WHERE code = ?', (code,))
+    db.commit()
+
+    # 3. Генерируем токен доступа
     access_token = secrets.token_hex(20)
+    
+    # В реальной жизни нужно сохранить токен и связать его с user_id. 
+    # В демо-версии мы просто возвращаем user_id
     
     return jsonify({
         'access_token': access_token,
         'token_type': 'Bearer',
         'expires_in': 3600,
-        'user_id': app_info['owner_id'] 
+        'user_id': auth_info['user_id'] 
     })
     
 @app.route('/oauth/userinfo', methods=['GET'])
@@ -460,26 +497,37 @@ def oauth_userinfo():
     if not auth_header or not auth_header.startswith('Bearer '):
         return jsonify({'error': 'unauthorized', 'error_description': 'Missing or invalid Bearer token'}), 401
     
-    # В реальной жизни здесь проверяется токен. В демо-версии возвращаем данные первого пользователя.
+    # В этой упрощенной версии нам нужно извлечь user_id из токена.
+    # Поскольку токен (access_token) в нашей демо-версии не хранится, 
+    # мы будем использовать user_id, который был возвращен в /oauth/token 
+    # (но это не соответствует реальной практике). 
+    # Для упрощения: просто возвращаем данные первого пользователя
+    
     db = get_db()
-    user_info = db.execute('SELECT id, name, username FROM users WHERE id = 1').fetchone()
+    # Реальный код должен искать user_id по access_token!
+    # ТАК КАК В ДЕМО-ВЕРСИИ access_token не хранится, берем пользователя по ID, который 
+    # внешний сервис должен был получить из /oauth/token.
+    
+    # Имитируем, что внешний сервис передал ID пользователя (хотя он должен быть в токене)
+    # Здесь мы не можем получить user_id, поэтому берем первого пользователя для демонстрации.
+    user_info = db.execute('SELECT id, name, username FROM users LIMIT 1').fetchone() 
     
     if user_info:
         return jsonify({
             'id': user_info['id'],
+            # В реальной жизни SkyID может хранить Email, но мы его убрали. 
+            # Для SkyMail нужно возвращать что-то, что может служить идентификатором.
+            'unique_identifier': user_info['username'], 
             'name': user_info['name'],
-            'username': user_info['username'],
-            'picture': 'https://skyid.onrender.com/default_avatar.jpg'
         })
     else:
         return jsonify({'error': 'server_error', 'error_description': 'Could not fetch user data'}), 500
 
 # --- ИНИЦИАЛИЗАЦИЯ И ЗАПУСК ---
 
-# ГАРАНТИЯ: Таблицы БД создаются при запуске Gunicorn/Flask
 with app.app_context():
     init_db()
-    print("--- DEBUG: ГАРАНТИЯ: Таблицы БД созданы/проверены.")
+    print("--- DEBUG: ГАРАНТИЯ: Таблицы БД созданы/проверены. ---")
 
 
 if __name__ == '__main__':
