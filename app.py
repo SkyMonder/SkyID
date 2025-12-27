@@ -11,7 +11,7 @@ app = Flask(__name__)
 app.secret_key = 'skyid_master_key_change_in_production'
 DB_NAME = 'skyid.db'
 
-# --- CSS И ДИЗАЙН (Без изменений) ---
+# --- CSS И ДИЗАЙН ---
 BASE_STYLES = """
 <style>
     :root {
@@ -59,7 +59,7 @@ BASE_STYLES = """
     .app-item:last-child { border-bottom: none; }
     .key-display { font-family: monospace; background: #eee; padding: 4px 8px; border-radius: 4px; color: #333; font-size: 13px; word-break: break-all; }
     
-    /* Стиль самой кнопки быстрого входа (для интеграции) */
+    /* Стиль самой кнопки быстрого входа (для интеграции и для главной страницы) */
     .skyid-widget-btn {
         background-color: #0077FF;
         color: white;
@@ -127,13 +127,14 @@ def close_connection(exception):
 def init_db():
     with app.app_context():
         db = get_db()
-        # ИЗМЕНЕНИЕ: Убран Email, только username (логин)
+        # Таблица users: только login (username) и пароль
         db.execute('''CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL, 
             password TEXT NOT NULL,
             name TEXT NOT NULL
         )''')
+        # Таблица apps: один длинный API Key
         db.execute('''CREATE TABLE IF NOT EXISTS apps (
             client_id TEXT PRIMARY KEY,
             api_key TEXT NOT NULL, 
@@ -170,8 +171,10 @@ def index():
         </p>
         {% if not session.get('user_id') %}
             <div style="display: flex; justify-content: center; gap: 15px;">
-                <a href="/register" class="btn">Создать аккаунт</a>
-                <a href="/login" class="btn btn-secondary">Войти</a>
+                <a href="/register" class="btn btn-secondary">Создать SkyID</a>
+                <a href="/login" class="skyid-widget-btn">
+                    <span class="skyid-logo-small">S</span> Войти в SkyID
+                </a>
             </div>
         {% else %}
              <a href="/dashboard" class="btn">Перейти в консоль разработчика</a>
@@ -182,7 +185,6 @@ def index():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        # ИЗМЕНЕНИЕ: Только username (логин) и password, name
         username = request.form['username'].strip() 
         password = request.form['password']
         name = request.form['name']
@@ -229,7 +231,6 @@ def login():
     next_url = request.args.get('next') or url_for('dashboard')
     
     if request.method == 'POST':
-        # ИЗМЕНЕНИЕ: Используем Логин (username)
         username = request.form['username'].strip()
         password = request.form['password']
         
@@ -266,6 +267,11 @@ def login():
         </div>
     </div>
     """)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('index'))
 
 @app.route('/dashboard', methods=['GET', 'POST'])
 @login_required
@@ -394,7 +400,6 @@ def oauth_authorize():
         # Генерируем временный код авторизации
         auth_code = secrets.token_urlsafe(16)
         
-        # В идеале нужно сохранить auth_code в БД и связать с client_id
         redirect_to = f"{app_info['redirect_uri']}?code={auth_code}"
         return redirect(redirect_to)
 
@@ -448,6 +453,26 @@ def oauth_token():
         'expires_in': 3600,
         'user_id': app_info['owner_id'] 
     })
+    
+@app.route('/oauth/userinfo', methods=['GET'])
+def oauth_userinfo():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({'error': 'unauthorized', 'error_description': 'Missing or invalid Bearer token'}), 401
+    
+    # В реальной жизни здесь проверяется токен. В демо-версии возвращаем данные первого пользователя.
+    db = get_db()
+    user_info = db.execute('SELECT id, name, username FROM users WHERE id = 1').fetchone()
+    
+    if user_info:
+        return jsonify({
+            'id': user_info['id'],
+            'name': user_info['name'],
+            'username': user_info['username'],
+            'picture': 'https://skyid.onrender.com/default_avatar.jpg'
+        })
+    else:
+        return jsonify({'error': 'server_error', 'error_description': 'Could not fetch user data'}), 500
 
 # --- ИНИЦИАЛИЗАЦИЯ И ЗАПУСК ---
 
@@ -458,5 +483,5 @@ with app.app_context():
 
 
 if __name__ == '__main__':
-    print("SkyID 3.0 запущен на http://127.0.0.1:5000 (Локально)")
+    print("SkyID 3.1 запущен на http://127.0.0.1:5000 (Локально)")
     app.run(debug=True)
